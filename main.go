@@ -14,17 +14,20 @@ import (
 
 type Service struct {
 	Name           string      `json:"name"`
-	Timeout        int         `json:"int"`
+	Timeout        int         `json:"timeout"`
 	URL            string      `json:"url"`
 	Heartbeat      int         `json:"heartbeat"`
 	Strikes        int         `json:"strikes"`
 	DiscordWebhook string      `json:"discord_webhook"`
+	wasDown        bool
+	whenDown       time.Time
+	strikeCounter  int
+	totalCounter   int
+	downCounter    int
 }
 
 var services []Service
 
-var wasDown = false
-var counter = 0
 
 func main() {
 	//if len(os.Args) <= 1 {
@@ -83,41 +86,50 @@ func check(service Service) {
 	}
 	for {
 		<-ticker.C
-		checkAvailability(service.URL, service.Strikes, client, service.DiscordWebhook)
+		service.checkAvailability(client)
 	}
 }
 
-func checkAvailability(url string, strikes int, client http.Client, discordWebhook string) bool {
-	for i := range 3 {
-		fmt.Println("try:", i+1)
-		res, err := client.Get(url)
+func (s *Service) checkAvailability(client http.Client) {
+	defer func() {s.totalCounter++; fmt.Printf("Uptime percentage: %.2f%%\n\n", 100 - ((float64(s.downCounter) * 100) / float64(s.totalCounter)))}()
+
+	for range 3 {
+		res, err := client.Get(s.URL)
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 		if res.StatusCode >= 200 && res.StatusCode <= 299 {
-			log.Println(url, "is up.")
-			if wasDown {
-				counter = 0
-				wasDown = false
-				notifyDiscord(fmt.Sprintf("✅ %v is back up! :)", url), discordWebhook)
+			log.Println(s.Name, s.URL, "is up.")
+			s.strikeCounter = 0
+			if s.wasDown {
+				s.wasDown = false
+				notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
+				s.whenDown = time.Time{}
 			}
-			return true
+			return
 		}
 	}
 
-	counter++
-	log.Printf("Website down - Strike %v/%v\n", counter, strikes)
-	if discordWebhook != "" && counter == strikes {
-		notifyDiscord(fmt.Sprintf("❌ Your service %v went down :(", url), discordWebhook)
-		wasDown = true
-		counter = 0
+	s.strikeCounter++
+	s.downCounter++
+	log.Printf("%s seems down - Strike %v/%v\n", s.Name, s.strikeCounter, s.Strikes)
+	if s.strikeCounter == s.Strikes {
+		s.strikeCounter = 0
+		notifyDiscord(fmt.Sprintf("❌ Your service %v went down :(", s.URL), s.DiscordWebhook)
+		if !s.wasDown {
+			s.wasDown = true
+			s.whenDown = time.Now()
+		}
 	}
-
-	return false
 }
 
 func notifyDiscord(message string, discordWebhook string) {
+	if discordWebhook == "" {
+		log.Printf("No Discord configured - %s", message)
+		return
+	}
+
 	payload := fmt.Sprintf(
 		`{"content": "%v\n time: %v"}`,
 		message, time.Now(),
