@@ -2,23 +2,21 @@ package main
 
 import (
 	"encoding/json"
-	//"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	//"os"
 	"strings"
 	"time"
 )
 
 type Service struct {
-	Name           string      `json:"name"`
-	Timeout        int         `json:"timeout"`
-	URL            string      `json:"url"`
-	Heartbeat      int         `json:"heartbeat"`
-	Strikes        int         `json:"strikes"`
-	DiscordWebhook string      `json:"discord_webhook"`
+	Name           string `json:"name"`
+	Timeout        int    `json:"timeout"`
+	URL            string `json:"url"`
+	Heartbeat      int    `json:"heartbeat"`
+	Strikes        int    `json:"strikes"`
+	DiscordWebhook string `json:"discord_webhook"`
 	wasDown        bool
 	whenDown       time.Time
 	strikeCounter  int
@@ -28,28 +26,9 @@ type Service struct {
 
 var services []Service
 
+// table REQUISITIONS: id UUID, service_id INT, when DATETIME, status BOOL
 
 func main() {
-	//if len(os.Args) <= 1 {
-	//fmt.Println("Usage: amiup -url=\"example.com\" [-flag=value]\namiup -h for more info")
-	//return
-	//}
-	//url := flag.String("url", "", "the target url")
-	//strikes := flag.Int("r", 0, "number of strikes before notification")
-	//heartbeat := flag.Int("hb", 30, "heartbeat, the number of seconds between checks")
-	//timeout := flag.Int("timeout", 5, "seconds before http timeout")
-	//discordWebhook := flag.String("webhook", "", "your discord webhook url")
-	//flag.Parse()
-
-	//services = append(services, Service{
-	//	Name:           "Criador de Aulas",
-	//	Timeout:        5,
-	//	URL:            "http://localhost:3000",
-	//	Heartbeat:      10,
-	//	Strikes:        3,
-	//	DiscordWebhook: "https://discord.com/api/webhooks/1442591494908284938/dudIfRrKvBEyfNiKq9aGNCKpEOl7Be1kigWMbYHFD46IKP9DEU9pd2Yj4s4I-cLxDZpL",
-	//})
-
 	for _, service := range services {
 		go check(service)
 	}
@@ -86,29 +65,32 @@ func check(service Service) {
 	}
 	for {
 		<-ticker.C
-		service.checkAvailability(client)
+		ok := service.checkAvailability(client)
+		if !ok {
+			//exponential backoff (~random) for strikes
+		}
 	}
 }
 
-func (s *Service) checkAvailability(client http.Client) {
-	defer func() {s.totalCounter++; fmt.Printf("Uptime percentage: %.2f%%\n\n", 100 - ((float64(s.downCounter) * 100) / float64(s.totalCounter)))}()
+func (s *Service) checkAvailability(client http.Client) bool {
+	defer func() {
+		s.totalCounter++
+		fmt.Printf("Uptime percentage: %.2f%%\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)))
+	}()
 
-	for range 3 {
-		res, err := client.Get(s.URL)
-		if err != nil {
-			fmt.Println(err)
-			continue
+	res, err := client.Get(s.URL)
+	if err != nil {
+		fmt.Println(err)
+	}
+	if res.StatusCode >= 200 && res.StatusCode <= 299 {
+		log.Println(s.Name, s.URL, "is up.")
+		s.strikeCounter = 0
+		if s.wasDown {
+			s.wasDown = false
+			notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
+			s.whenDown = time.Time{}
 		}
-		if res.StatusCode >= 200 && res.StatusCode <= 299 {
-			log.Println(s.Name, s.URL, "is up.")
-			s.strikeCounter = 0
-			if s.wasDown {
-				s.wasDown = false
-				notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
-				s.whenDown = time.Time{}
-			}
-			return
-		}
+		return true
 	}
 
 	s.strikeCounter++
@@ -122,6 +104,7 @@ func (s *Service) checkAvailability(client http.Client) {
 			s.whenDown = time.Now()
 		}
 	}
+	return false
 }
 
 func notifyDiscord(message string, discordWebhook string) {
