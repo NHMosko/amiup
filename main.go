@@ -61,9 +61,10 @@ func listServices(w http.ResponseWriter, r *http.Request) {
 func check(service Service) {
 	ticker := time.NewTicker(time.Duration(service.Heartbeat) * time.Second)
 	client := http.Client{
-		Timeout: time.Duration(service.Timeout) * time.Second,
+		Timeout: time.Duration(service.Timeout) * time.Second, //timeout <= heartbeat/2
 	}
 	for {
+		//mudar ticker pra delay pós requisição
 		<-ticker.C
 		ok := service.checkAvailability(client)
 		if !ok {
@@ -71,6 +72,8 @@ func check(service Service) {
 		}
 	}
 }
+
+//melhorar/detalhar logs
 
 func (s *Service) checkAvailability(client http.Client) bool {
 	defer func() {
@@ -81,8 +84,7 @@ func (s *Service) checkAvailability(client http.Client) bool {
 	res, err := client.Get(s.URL)
 	if err != nil {
 		fmt.Println(err)
-	}
-	if res.StatusCode >= 200 && res.StatusCode <= 299 {
+	} else if res.StatusCode >= 200 && res.StatusCode <= 299 {
 		log.Println(s.Name, s.URL, "is up.")
 		s.strikeCounter = 0
 		if s.wasDown {
