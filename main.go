@@ -27,6 +27,7 @@ type Service struct {
 var services []Service
 
 // table REQUISITIONS: id UUID, service_id INT, when DATETIME, status BOOL
+// Streak Test
 
 func main() {
 	for _, service := range services {
