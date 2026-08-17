@@ -6,7 +6,7 @@ package main
 // - Save the data (banco de dados)
 //   º Services
 //   º Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
-// 		table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER 
+// 		table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
 //
 // - Load the data
 
@@ -64,7 +64,9 @@ func main() {
 
 func addNewService(w http.ResponseWriter, r *http.Request) {
 	serv := Service{}
-	decodeInput(w, r, &serv)
+	if !decodeInput(w, r, &serv) {
+		return
+	}
 	services = append(services, serv)
 
 	go check(serv)
@@ -96,7 +98,7 @@ func check(service Service) {
 func (s *Service) checkAvailability(client http.Client) bool {
 	defer func() {
 		s.totalCounter++
-		fmt.Printf("Uptime percentage: %.2f%%\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)))
+		fmt.Printf("Uptime percentage: %.2f%% (%v/%v)\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)), s.totalCounter - s.downCounter, s.totalCounter)
 	}()
 
 	res, err := client.Get(s.URL)
@@ -193,7 +195,7 @@ func notifyDiscord(message string, discordWebhook string) {
 //}],
 //////};
 
-func decodeInput(w http.ResponseWriter, r *http.Request, out any) {
+func decodeInput(w http.ResponseWriter, r *http.Request, out *Service) bool {
 	decoder := json.NewDecoder(r.Body)
 	defer r.Body.Close()
 
@@ -201,8 +203,33 @@ func decodeInput(w http.ResponseWriter, r *http.Request, out any) {
 	if err != nil {
 		log.Printf("Error decoding: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return
+		return false
 	}
+	if missingRequiredFields(out) {
+		log.Println("Missing Required Fields")
+		respondWithError(w, http.StatusBadRequest, "Missing Required Fields")
+		return false
+	}
+	return true
+}
+
+func missingRequiredFields(service *Service) bool {
+	if service.Name == "" {
+		return true
+	}
+	if service.URL == "" {
+		return true
+	}
+	if service.Timeout == 0 {
+		return true
+	}
+	if service.Heartbeat == 0 {
+		return true
+	}
+	if service.Strikes == 0 {
+		return true
+	}
+	return false
 }
 
 func respondWithError(w http.ResponseWriter, code int, message string) {
@@ -219,8 +246,8 @@ func respondWithError(w http.ResponseWriter, code int, message string) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
+	w.Header().Set("Content-Type", "application/json")
 	w.Write(errDat)
 }
 
@@ -229,6 +256,7 @@ func respondWithJSON(w http.ResponseWriter, code int, rawData any) {
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
 		w.WriteHeader(500)
+		w.Write(data)
 		return
 	}
 
@@ -236,3 +264,15 @@ func respondWithJSON(w http.ResponseWriter, code int, rawData any) {
 	w.WriteHeader(code)
 	w.Write(data)
 }
+
+// example json
+/*
+{
+	"name": "Google",
+	"timeout": 10,
+	"url": "https://google.com",
+	"heartbeat": 5,
+	"strikes": 3,
+	"discord_webhook": ""
+}
+*/
