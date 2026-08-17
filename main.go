@@ -1,5 +1,22 @@
 package main
 
+// TODO:
+// - Check json body before dealing with it (empty post bug)
+
+// - Save the data (banco de dados)
+//   º Services
+//   º Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
+// 		table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER 
+//
+// - Load the data
+
+// - ENV variables (ler do ambiente)
+//   º Addr (port, ip) -> de onde o amiup vai receber chamados
+//   º API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
+//   º Allow Insecure Target (aceitar http ou só https)
+
+// - Usar Go Tool Air (hot reload)
+
 import (
 	"encoding/json"
 	"fmt"
@@ -26,7 +43,6 @@ type Service struct {
 
 var services []Service
 
-// table REQUISITIONS: id UUID, service_id INT, when DATETIME, status BOOL
 // Streak Test
 
 func main() {
@@ -42,7 +58,7 @@ func main() {
 		Handler: mux,
 		Addr:    ":8082",
 	}
-	log.Println("Server on")
+	log.Printf("Server on %v", server.Addr)
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -56,6 +72,7 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 }
 
 func listServices(w http.ResponseWriter, r *http.Request) {
+	// listar serviços e porcentagens
 	w.WriteHeader(http.StatusOK)
 }
 
