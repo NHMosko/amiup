@@ -1,7 +1,7 @@
 package main
 
 // TODO:
-// - Check json body before dealing with it (empty post bug)
+// DONE Check json body before dealing with it (empty post bug)
 
 // - Save the data (banco de dados)
 //   º Services
@@ -12,17 +12,21 @@ package main
 
 // - ENV variables (ler do ambiente)
 //   º Addr (port, ip) -> de onde o amiup vai receber chamados
-//   º API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
+//   DONE API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
 //   º Allow Insecure Target (aceitar http ou só https)
 
-// - Usar Go Tool Air (hot reload)
+// DONE Usar Go Tool Air (hot reload)
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,16 +47,21 @@ type Service struct {
 
 var services []Service
 
+type RemovalRequest struct {
+	Indexes []int `json:"indexes"`
+}
+
 // Streak Test
 
 func main() {
 	for _, service := range services {
-		go check(service)
+		go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /services", addNewService)
 	mux.HandleFunc("GET /services", listServices)
+	mux.HandleFunc("POST /remove-service", removeService) // não funciona
 
 	server := http.Server{
 		Handler: mux,
@@ -63,22 +72,92 @@ func main() {
 }
 
 func addNewService(w http.ResponseWriter, r *http.Request) {
+	//fmt.Printf("Authorization: %q\n", r.Header.Get("Authorization"))
+	//fmt.Printf("Remote Address: %v", r.RemoteAddr)
+
+	allowedAddr := os.Getenv("REMOTE_ADDR")
+	addr, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || addr != allowedAddr {
+		respondWithError(w, http.StatusForbidden, "Invalid remote address")
+		return
+	}
+
+	expectedKey := os.Getenv("API_KEY")
+	key, err := GetAPIKey(r.Header)
+	if err != nil || key != expectedKey {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	serv := Service{}
 	if !decodeInput(w, r, &serv) {
 		return
 	}
+	if missingRequiredFields(serv) {
+		log.Println("Missing Required Fields")
+		respondWithError(w, http.StatusBadRequest, "Missing Required Fields")
+		return
+	}
 	services = append(services, serv)
 
-	go check(serv)
+	go check(&serv)
 	respondWithJSON(w, http.StatusCreated, serv)
+	log.Printf("New service added: %v", serv.Name)
 }
 
 func listServices(w http.ResponseWriter, r *http.Request) {
 	// listar serviços e porcentagens
-	w.WriteHeader(http.StatusOK)
+	for _, service := range services {
+		log.Println(service)
+	}
+	respondWithJSON(w, http.StatusOK, "Services.")
 }
 
-func check(service Service) {
+func removeService(w http.ResponseWriter, r *http.Request) {
+	if len(services) == 0 {
+		respondWithError(w, http.StatusBadRequest, "No services to remove")
+		return
+	}
+	allowedAddr := os.Getenv("REMOTE_ADDR")
+	addr, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || addr != allowedAddr {
+		respondWithError(w, http.StatusForbidden, "Invalid remote address")
+		return
+	}
+
+	expectedKey := os.Getenv("API_KEY")
+	key, err := GetAPIKey(r.Header)
+	if err != nil || key != expectedKey {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	remReq := RemovalRequest{}
+	if !decodeInput(w, r, &remReq) {
+		return
+	}
+
+	for _, v := range remReq.Indexes {
+		if len(services) < v {
+			respondWithError(w, http.StatusBadRequest, "Service inexistent")
+			return
+		}
+	}
+	var newSlice []Service
+	for i := range services {
+		if !slices.Contains(remReq.Indexes, i) {
+			newSlice = append(newSlice, services[i])
+		}
+	}
+	services = newSlice
+	log.Printf("%v", services[0])
+	respondWithJSON(w, http.StatusAccepted, "Services removed")
+}
+
+func check(service *Service) {
+	if service == nil {
+		return
+	}
 	ticker := time.NewTicker(time.Duration(service.Heartbeat) * time.Second)
 	client := http.Client{
 		Timeout: time.Duration(service.Timeout) * time.Second, //timeout <= heartbeat/2
@@ -98,7 +177,7 @@ func check(service Service) {
 func (s *Service) checkAvailability(client http.Client) bool {
 	defer func() {
 		s.totalCounter++
-		fmt.Printf("Uptime percentage: %.2f%% (%v/%v)\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)), s.totalCounter - s.downCounter, s.totalCounter)
+		fmt.Printf("Uptime percentage: %.2f%% (%v/%v)\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)), s.totalCounter-s.downCounter, s.totalCounter)
 	}()
 
 	res, err := client.Get(s.URL)
@@ -168,34 +247,7 @@ func notifyDiscord(message string, discordWebhook string) {
 	}
 }
 
-//discorddowndata = {
-//username: "amiup",
-//embeds: [{
-//title: "❌ Your service " + monitorJSON["name"] + " went down. ❌",
-//color: 16711680,
-//timestamp: heartbeatJSON["time"],
-//fields: [
-//{
-//name: "Service Name",
-//value: monitorJSON["name"],
-//},
-//...(!notification.disableUrl ? [{
-//name: monitorJSON["type"] === "push" ? "Service Type" : "Service URL",
-////value: this.extractAddress(monitorJSON),
-//}] : []),
-//{
-//name: `Time (${heartbeatJSON["timezone"]})`,
-////value: heartbeatJSON["localDateTime"],
-//},
-//{
-//name: "Error",
-//value: heartbeatJSON["msg"] == null ? "N/A" : heartbeatJSON["msg"],
-//},
-//],
-//}],
-//////};
-
-func decodeInput(w http.ResponseWriter, r *http.Request, out *Service) bool {
+func decodeInput(w http.ResponseWriter, r *http.Request, out any) bool {
 	decoder := json.NewDecoder(r.Body)
 	defer r.Body.Close()
 
@@ -205,15 +257,10 @@ func decodeInput(w http.ResponseWriter, r *http.Request, out *Service) bool {
 		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 		return false
 	}
-	if missingRequiredFields(out) {
-		log.Println("Missing Required Fields")
-		respondWithError(w, http.StatusBadRequest, "Missing Required Fields")
-		return false
-	}
 	return true
 }
 
-func missingRequiredFields(service *Service) bool {
+func missingRequiredFields(service Service) bool {
 	if service.Name == "" {
 		return true
 	}
@@ -265,14 +312,51 @@ func respondWithJSON(w http.ResponseWriter, code int, rawData any) {
 	w.Write(data)
 }
 
-// example json
-/*
-{
-	"name": "Google",
-	"timeout": 10,
-	"url": "https://google.com",
-	"heartbeat": 5,
-	"strikes": 3,
-	"discord_webhook": ""
+// Expected Header: Authorization: ApiKey KEY_VALUE
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("authorization header is missing")
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "ApiKey" {
+		return "", errors.New("invalid authorization format")
+	}
+
+	return parts[1], nil
 }
+
+// Old code
+
+//discorddowndata = {
+//username: "amiup",
+//embeds: [{
+//title: "❌ Your service " + monitorJSON["name"] + " went down. ❌",
+//color: 16711680,
+//timestamp: heartbeatJSON["time"],
+//fields: [
+//{
+//name: "Service Name",
+//value: monitorJSON["name"],
+//},
+//...(!notification.disableUrl ? [{
+//name: monitorJSON["type"] === "push" ? "Service Type" : "Service URL",
+////value: this.extractAddress(monitorJSON),
+//}] : []),
+//{
+//name: `Time (${heartbeatJSON["timezone"]})`,
+////value: heartbeatJSON["localDateTime"],
+//},
+//{
+//name: "Error",
+//value: heartbeatJSON["msg"] == null ? "N/A" : heartbeatJSON["msg"],
+//},
+//],
+//}],
+//////};
+
+// Example Usage
+/*
+curl -H "Authorization: ApiKey 1234" localhost:8082/services --data '{"name": "Google", "timeout": 10, "url": "https://google.com", "heartbeat": 5, "strikes": 3, "discord_webhook": ""}'
 */
