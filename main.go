@@ -5,17 +5,20 @@ package main
 
 // - Save the data (banco de dados)
 //   º Services
-//   º Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
-// 		table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
+//   DONE Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
+// 	 º table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
 //
 // - Load the data
 
-// - ENV variables (ler do ambiente)
-//   º Addr (port, ip) -> de onde o amiup vai receber chamados
+// DONE ENV variables (ler do ambiente)
+//   DONE Addr (port, ip) -> de onde o amiup vai receber chamados
 //   DONE API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
-//   º Allow Insecure Target (aceitar http ou só https)
+//   DONE Allow Insecure Target (aceitar http ou só https)
 
 // DONE Usar Go Tool Air (hot reload)
+
+
+// - Entender o bug de não ter os dados dos serviços nos outros endpoints
 
 import (
 	"encoding/json"
@@ -25,8 +28,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,13 +52,34 @@ type Service struct {
 
 var services []Service
 
+type Requisition struct {
+	when          time.Time
+	response_body string
+	status        int
+	duration      time.Duration
+}
+
 type RemovalRequest struct {
 	Indexes []int `json:"indexes"`
 }
 
-// Streak Test
+var expectedKey string
+var allowedAddr string
+var allowInsecureTarget bool
 
+// Streak Test
 func main() {
+	expectedKey             = os.Getenv("API_KEY")
+	allowedAddr             = os.Getenv("REMOTE_ADDR")
+	allowInsecureTargetStr := os.Getenv("ALLOW_INSECURE_TARGET")
+
+	var err error
+	allowInsecureTarget, err = strconv.ParseBool(allowInsecureTargetStr)
+	if err != nil {
+		fmt.Printf("Invalid ALLOW_INSECURE_TARGET config: %s - Err: %v", allowInsecureTargetStr, err)
+		return
+	}
+
 	for _, service := range services {
 		go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
 	}
@@ -67,7 +93,7 @@ func main() {
 		Handler: mux,
 		Addr:    ":8082",
 	}
-	log.Printf("Server on %v", server.Addr)
+	log.Printf("Server on port %v", server.Addr)
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -75,14 +101,12 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 	//fmt.Printf("Authorization: %q\n", r.Header.Get("Authorization"))
 	//fmt.Printf("Remote Address: %v", r.RemoteAddr)
 
-	allowedAddr := os.Getenv("REMOTE_ADDR")
 	addr, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || addr != allowedAddr {
 		respondWithError(w, http.StatusForbidden, "Invalid remote address")
 		return
 	}
 
-	expectedKey := os.Getenv("API_KEY")
 	key, err := GetAPIKey(r.Header)
 	if err != nil || key != expectedKey {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
@@ -158,6 +182,18 @@ func check(service *Service) {
 	if service == nil {
 		return
 	}
+
+	if !allowInsecureTarget {
+		url, err := url.Parse(service.URL)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if url.Scheme == "http" {
+			log.Println("Connection Type Not Allowed")
+		}
+	}
+
 	ticker := time.NewTicker(time.Duration(service.Heartbeat) * time.Second)
 	client := http.Client{
 		Timeout: time.Duration(service.Timeout) * time.Second, //timeout <= heartbeat/2
@@ -165,33 +201,54 @@ func check(service *Service) {
 	for {
 		//mudar ticker pra delay pós requisição
 		<-ticker.C
-		ok := service.checkAvailability(client)
+
+		time_check := time.Now()
+		ok, req := service.checkAvailability(client)
 		if !ok {
 			//exponential backoff (~random) for strikes
 		}
+		req.duration = time.Since(time_check)
+
+		//fmt.Println(req.when)
+		//fmt.Println(len(req.response_body))
+		//fmt.Println(req.status)
+		//fmt.Println(req.duration)
 	}
 }
 
 //melhorar/detalhar logs
 
-func (s *Service) checkAvailability(client http.Client) bool {
+func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 	defer func() {
 		s.totalCounter++
 		fmt.Printf("Uptime percentage: %.2f%% (%v/%v)\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)), s.totalCounter-s.downCounter, s.totalCounter)
 	}()
 
+	requisition := Requisition{}
 	res, err := client.Get(s.URL)
+
 	if err != nil {
 		fmt.Println(err)
-	} else if res.StatusCode >= 200 && res.StatusCode <= 299 {
-		log.Println(s.Name, s.URL, "is up.")
-		s.strikeCounter = 0
-		if s.wasDown {
-			s.wasDown = false
-			notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
-			s.whenDown = time.Time{}
+	} else {
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			log.Println(err)
 		}
-		return true
+		requisition.response_body = string(body)
+		requisition.when = time.Now()
+		requisition.status = res.StatusCode
+
+		if res.StatusCode >= 200 && res.StatusCode <= 299 {
+			log.Println(s.Name, s.URL, "is up.")
+			s.strikeCounter = 0
+			if s.wasDown {
+				s.wasDown = false
+				notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
+				s.whenDown = time.Time{}
+			}
+			return true, requisition
+		}
 	}
 
 	s.strikeCounter++
@@ -205,7 +262,7 @@ func (s *Service) checkAvailability(client http.Client) bool {
 			s.whenDown = time.Now()
 		}
 	}
-	return false
+	return false, requisition
 }
 
 func notifyDiscord(message string, discordWebhook string) {
