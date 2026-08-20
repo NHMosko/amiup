@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "github.com/lib/pq"
 )
 
 type Service struct {
