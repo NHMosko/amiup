@@ -10,6 +10,9 @@ package main
 //
 // - Load the data
 
+// Criando o banco de dados com base em:
+// https://www.boot.dev/lessons/0820daf4-4006-425a-a50c-f45c0eb97d06
+
 // DONE ENV variables (ler do ambiente)
 //   DONE Addr (port, ip) -> de onde o amiup vai receber chamados
 //   DONE API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
@@ -17,10 +20,10 @@ package main
 
 // DONE Usar Go Tool Air (hot reload)
 
-
 // - Entender o bug de não ter os dados dos serviços nos outros endpoints
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NHMosko/amiup/internal/database"
 	_ "github.com/lib/pq"
 )
 
@@ -64,20 +69,35 @@ type RemovalRequest struct {
 	Indexes []int `json:"indexes"`
 }
 
+type Config struct {
+	db *database.Queries
+}
+
 var expectedKey string
 var allowedAddr string
 var allowInsecureTarget bool
 
 // Streak Test
 func main() {
-	expectedKey             = os.Getenv("API_KEY")
-	allowedAddr             = os.Getenv("REMOTE_ADDR")
+	expectedKey = os.Getenv("API_KEY")
+	allowedAddr = os.Getenv("REMOTE_ADDR")
 	allowInsecureTargetStr := os.Getenv("ALLOW_INSECURE_TARGET")
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println(err)
+		return;
+	}
+	dbQueries := database.New(db)
+	cfg := Config{
+		db: dbQueries,
+	}
+	log.Println(cfg.db)
 
-	var err error
+
 	allowInsecureTarget, err = strconv.ParseBool(allowInsecureTargetStr)
 	if err != nil {
-		fmt.Printf("Invalid ALLOW_INSECURE_TARGET config: %s - Err: %v", allowInsecureTargetStr, err)
+		fmt.Printf("Invalid ALLOW_INSECURE_TARGET config: '%s' - Err: %v", allowInsecureTargetStr, err)
 		return
 	}
 
