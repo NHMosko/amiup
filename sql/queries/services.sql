@@ -4,6 +4,7 @@ INSERT INTO services (
 	created_at,
 	name,
 	url,
+	discord_webhook,
 	timeout,
 	heartbeat,
 	strikes,
@@ -25,6 +26,7 @@ VALUES (
 	$7,
 	$8,
 	$9,
-	$10
+	$10,
+	$11
 )
 RETURNING *;

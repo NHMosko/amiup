@@ -42,6 +42,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// ADAPTING TO RECEIVE DIFFERENT STRUCT THAN IS STORED
+
 type Service struct {
 	Name           string `json:"name"`
 	Timeout        int    `json:"timeout"`
@@ -76,6 +78,7 @@ type Config struct {
 var expectedKey string
 var allowedAddr string
 var allowInsecureTarget bool
+var cfg Config
 
 // Streak Test
 func main() {
@@ -83,13 +86,14 @@ func main() {
 	allowedAddr = os.Getenv("REMOTE_ADDR")
 	allowInsecureTargetStr := os.Getenv("ALLOW_INSECURE_TARGET")
 	dbURL := os.Getenv("DB_URL")
+	log.Println(dbURL)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err)
 		return;
 	}
 	dbQueries := database.New(db)
-	cfg := Config{
+	cfg = Config{
 		db: dbQueries,
 	}
 	log.Println(cfg.db)
@@ -101,9 +105,9 @@ func main() {
 		return
 	}
 
-	for _, service := range services {
-		go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
-	}
+	//for _, service := range services {
+		//go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
+	//}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /services", addNewService)
@@ -143,10 +147,28 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Missing Required Fields")
 		return
 	}
-	services = append(services, serv)
+	// services = append(services, serv) // NOTE(nico): this was doing nothing
 
-	go check(&serv)
-	respondWithJSON(w, http.StatusCreated, serv)
+	//go check(&serv) NOTE(nico): disable temporarily
+	addedService, err := cfg.db.CreateService(r.Context(), database.CreateServiceParams{
+		Name: serv.Name,
+		Url          : serv.URL,	
+		Timeout      : int32(serv.Timeout),	
+		Heartbeat    : int32(serv.Heartbeat),	
+		Strikes      : int32(serv.Strikes),	
+		WasDown      : serv.wasDown,	
+		WhenDown     : sql.NullTime{Time: time.Now(), Valid: false},	
+		StrikeCounter: sql.NullInt32{Int32: 0, Valid: true},	
+		TotalCounter : sql.NullInt32{Int32: 0, Valid: true},	
+		DownCounter  : sql.NullInt32{Int32: 0, Valid: true},	
+	})
+	if err != nil {
+		log.Printf("Failed to add service to database: %v\n", err)
+		respondWithError(w, http.StatusBadRequest, "Failed to add service to database")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, addedService)
 	log.Printf("New service added: %v", serv.Name)
 }
 
