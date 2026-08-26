@@ -19,10 +19,10 @@ all of which can be edited later
 the program also keeps track of all requisitions if you wish to check for more information
 
 the endpoints are:
-/services
-/services/{serviceID}
-/services/delete/{serviceID}
-/requisitions
+- /services
+- /services/{serviceID}
+- /services/delete/{serviceID}
+- /requisitions
 
 all of the returned jsons in this version look bad, they're not formatted
 that's something to look forward to in my next update ;)
