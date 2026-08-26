@@ -12,11 +12,11 @@ package main
 // DONE Usar Go Tool Air (hot reload)
 // DONE Entender o bug de não ter os dados dos serviços nos outros endpoints
 
-// - Load the data
-// - Save the data (banco de dados)
+// DONE Load the data
+// DONE Save the data (banco de dados)
 //   DONE Services
 //   DONE Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
-// 	 º table REQUISITIONS: id UUID, service_id UUID, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
+// 	 DONE table REQUISITIONS: id UUID, service_id UUID, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
 
 import (
 	"context"
