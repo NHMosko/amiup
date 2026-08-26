@@ -1,32 +1,26 @@
 package main
 
-// TODO:
-// DONE Check json body before dealing with it (empty post bug)
-
-// - Save the data (banco de dados)
-//   º Services
-//   DONE Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
-// 	 º table REQUISITIONS: id UUID, service_id INT, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
-//
-// - Load the data
-
 // Criando o banco de dados com base em:
 // https://www.boot.dev/lessons/0820daf4-4006-425a-a50c-f45c0eb97d06
 
+// TODO:
+// DONE Check json body before dealing with it (empty post bug)
 // DONE ENV variables (ler do ambiente)
 //   DONE Addr (port, ip) -> de onde o amiup vai receber chamados
 //   DONE API KEY -> receber e verificar se as requisições a contem no header verification (Bearer Token) auth
 //   DONE Allow Insecure Target (aceitar http ou só https)
-
 // DONE Usar Go Tool Air (hot reload)
+// DONE Entender o bug de não ter os dados dos serviços nos outros endpoints
 
-// - Entender o bug de não ter os dados dos serviços nos outros endpoints
+// - Load the data
+// - Save the data (banco de dados)
+//   DONE Services
+//   DONE Salvar dados das requisições (quando, response, codigo, duracao entre conectar e responder)
+// 	 º table REQUISITIONS: id UUID, service_id UUID, when DATETIME, status NUMBER, response.body STRING, duration NUMBER
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,7 +28,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +37,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// ADAPTING TO RECEIVE DIFFERENT STRUCT THAN IS STORED
 type CreateService struct {
 	Name           string `json:"name"`
 	Timeout        int    `json:"timeout"`
@@ -69,11 +61,9 @@ type Service struct {
 	downCounter    int
 }
 
-var services []Service
-
 type Requisition struct {
 	when          time.Time
-	response_body string
+	response_body []byte
 	status        int
 	duration      time.Duration
 }
@@ -91,13 +81,12 @@ var allowedAddr string
 var allowInsecureTarget bool
 var cfg Config
 
-// Streak Test
 func main() {
+	// setup
 	expectedKey = os.Getenv("API_KEY")
 	allowedAddr = os.Getenv("REMOTE_ADDR")
 	allowInsecureTargetStr := os.Getenv("ALLOW_INSECURE_TARGET")
 	dbURL := os.Getenv("DB_URL")
-	//log.Println(dbURL)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err)
@@ -107,52 +96,39 @@ func main() {
 	cfg = Config{
 		db: dbQueries,
 	}
-	//log.Println(cfg.db)
-
 	allowInsecureTarget, err = strconv.ParseBool(allowInsecureTargetStr)
 	if err != nil {
 		fmt.Printf("Invalid ALLOW_INSECURE_TARGET config: '%s' - Err: %v", allowInsecureTargetStr, err)
 		return
 	}
-
 	dbServices, err := cfg.db.GetServices(context.Background())
 	if err != nil {
 		log.Printf("Failed to get services from database: %v\n", err)
 		return
 	}
+
+	// action
 	for _, service := range dbServices {
-		go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
+		go check(service.ID)
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /services", addNewService)
+	mux.HandleFunc("POST /services", middlewareAuth(addNewService))
+	mux.HandleFunc("POST /services/{serviceID}", middlewareAuth(editService))
 	mux.HandleFunc("GET /services", listServices)
-	mux.HandleFunc("POST /remove-service", removeService) // não funciona
-
+	mux.HandleFunc("GET /services/{serviceID}", getService)
+	mux.HandleFunc("GET /services/delete/{serviceID}", middlewareAuth(deleteService))
+	mux.HandleFunc("GET /requisitions", listRequisitions)
 	server := http.Server{
 		Handler: mux,
 		Addr:    ":8082",
 	}
+
 	log.Printf("Server on port %v", server.Addr)
 	log.Fatal(server.ListenAndServe())
 }
 
 func addNewService(w http.ResponseWriter, r *http.Request) {
-	//fmt.Printf("Authorization: %q\n", r.Header.Get("Authorization"))
-	//fmt.Printf("Remote Address: %v", r.RemoteAddr)
-
-	addr, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || addr != allowedAddr {
-		respondWithError(w, http.StatusForbidden, "Invalid remote address")
-		return
-	}
-
-	key, err := GetAPIKey(r.Header)
-	if err != nil || key != expectedKey {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-
 	serv := CreateService{}
 	if !decodeInput(w, r, &serv) {
 		return
@@ -162,9 +138,7 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Missing Required Fields")
 		return
 	}
-	// services = append(services, serv) // NOTE(nico): this was doing nothing
 
-	//go check(&serv) NOTE(nico): disable temporarily
 	addedService, err := cfg.db.CreateService(r.Context(), database.CreateServiceParams{
 		Name:           serv.Name,
 		Url:            serv.URL,
@@ -179,8 +153,66 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go check(addedService.ID)
 	respondWithJSON(w, http.StatusCreated, addedService)
 	log.Printf("New service added: %v", serv.Name)
+}
+
+func editService(w http.ResponseWriter, r *http.Request) {
+	serviceIDString := r.PathValue("serviceID")
+	serviceID, err := uuid.Parse(serviceIDString)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid service ID")
+		return
+	}
+
+	baseService, err := cfg.db.GetService(r.Context(), serviceID)
+	if err != nil {
+		log.Printf("Failed to get service from database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to get service from database")
+		return
+	}
+
+	serv := CreateService{}
+	if !decodeInput(w, r, &serv) {
+		return
+	}
+	if serv.Name == "" {
+		serv.Name = baseService.Name
+	}
+	if serv.URL == "" {
+		serv.URL = baseService.Url
+	}
+	if serv.DiscordWebhook == "" {
+		serv.DiscordWebhook = baseService.DiscordWebhook
+	}
+	if serv.Timeout == 0 {
+		serv.Timeout = int(baseService.Timeout)
+	}
+	if serv.Heartbeat == 0 {
+		serv.Heartbeat = int(baseService.Heartbeat)
+	}
+	if serv.Strikes == 0 {
+		serv.Strikes = int(baseService.Strikes)
+	}
+
+	err = cfg.db.EditService(r.Context(), database.EditServiceParams{
+		ID:             serviceID,
+		Name:           serv.Name,
+		Url:            serv.URL,
+		DiscordWebhook: serv.DiscordWebhook,
+		Timeout:        int32(serv.Timeout),
+		Heartbeat:      int32(serv.Heartbeat),
+		Strikes:        int32(serv.Strikes),
+	})
+	if err != nil {
+		log.Printf("Failed to add service to database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to add service to database")
+		return
+	}
+
+	respondWithJSON(w, http.StatusAccepted, "Service edited.")
+	log.Printf("%v edited", serv.Name)
 }
 
 func listServices(w http.ResponseWriter, r *http.Request) {
@@ -195,48 +227,41 @@ func listServices(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, services)
 }
 
-func removeService(w http.ResponseWriter, r *http.Request) {
-	if len(services) == 0 {
-		respondWithError(w, http.StatusBadRequest, "No services to remove")
+func getService(w http.ResponseWriter, r *http.Request) {
+	serviceIDString := r.PathValue("serviceID")
+	serviceID, err := uuid.Parse(serviceIDString)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid service ID")
 		return
 	}
-	allowedAddr := os.Getenv("REMOTE_ADDR")
-	addr, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || addr != allowedAddr {
-		respondWithError(w, http.StatusForbidden, "Invalid remote address")
-		return
-	}
-
-	expectedKey := os.Getenv("API_KEY")
-	key, err := GetAPIKey(r.Header)
-	if err != nil || key != expectedKey {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+	service, err := cfg.db.GetService(r.Context(), serviceID)
+	if err != nil {
+		log.Printf("Failed to get service from database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to get service from database")
 		return
 	}
 
-	remReq := RemovalRequest{}
-	if !decodeInput(w, r, &remReq) {
-		return
-	}
-
-	for _, v := range remReq.Indexes {
-		if len(services) < v {
-			respondWithError(w, http.StatusBadRequest, "Service inexistent")
-			return
-		}
-	}
-	var newSlice []Service
-	for i := range services {
-		if !slices.Contains(remReq.Indexes, i) {
-			newSlice = append(newSlice, services[i])
-		}
-	}
-	services = newSlice
-	log.Printf("%v", services[0])
-	respondWithJSON(w, http.StatusAccepted, "Services removed")
+	respondWithJSON(w, http.StatusOK, service)
 }
 
-func decode_service(service *database.Service) Service {
+func deleteService(w http.ResponseWriter, r *http.Request) {
+	serviceIDString := r.PathValue("serviceID")
+	serviceID, err := uuid.Parse(serviceIDString)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid service ID")
+		return
+	}
+	err = cfg.db.DeleteService(r.Context(), serviceID)
+	if err != nil {
+		log.Printf("Failed to delete service from database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete service from database")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, "Deleted")
+}
+
+func decode_service(service database.Service) Service {
 	return Service{
 		DB_ID:          service.ID,
 		Name:           service.Name,
@@ -253,37 +278,48 @@ func decode_service(service *database.Service) Service {
 	}
 }
 
-func check(service *database.Service) {
-	if service == nil {
-		return
-	}
-	serv := decode_service(service)
-
-	if !allowInsecureTarget {
-		url, err := url.Parse(serv.URL)
+func check(service_id uuid.UUID) {
+	for {
+		service, err := cfg.db.GetService(context.Background(), service_id)
 		if err != nil {
-			log.Println(err)
+			log.Printf("Failed to get service from db or it doesn't exist anymore")
 			return
 		}
-		if url.Scheme == "http" {
-			log.Println("Connection Type Not Allowed")
+		if !allowInsecureTarget {
+			url, err := url.Parse(service.Url)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			if url.Scheme == "http" {
+				log.Printf("Connection Type Not Allowed For %v", service.Url)
+				return
+			}
 		}
-	}
 
-	ticker := time.NewTicker(time.Duration(serv.Heartbeat) * time.Second)
-	client := http.Client{
-		Timeout: time.Duration(serv.Timeout) * time.Second, //timeout <= heartbeat/2
-	}
-	for {
-		//mudar ticker pra delay pós requisição
+		serv := decode_service(service)
+		ticker := time.NewTicker(time.Duration(serv.Heartbeat) * time.Second)
+		client := http.Client{
+			Timeout: time.Duration(serv.Timeout) * time.Second, //timeout <= heartbeat/2
+		}
 		<-ticker.C
 
 		time_check := time.Now()
-		ok, req := serv.checkAvailability(client)
-		if !ok {
-			//exponential backoff (~random) for strikes
+		up, req := serv.checkAvailability(client)
+		if !up {
+			// service is down
 		}
 		req.duration = time.Since(time_check)
+		_, err = cfg.db.CreateRequisition(context.Background(), database.CreateRequisitionParams{
+			ServiceID:    serv.DB_ID,
+			RequestTime:  req.when,
+			Status:       int32(req.status),
+			ResponseBody: req.response_body,
+			Duration:     int32(req.duration),
+		})
+		if err != nil {
+			log.Printf("Adding req to db failed: %v", err)
+		}
 	}
 }
 
@@ -294,7 +330,6 @@ func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 		s.totalCounter++
 		cfg.db.UpdateService(context.Background(), database.UpdateServiceParams{
 			ID:            s.DB_ID,
-			Strikes:       int32(s.Strikes),
 			WasDown:       s.wasDown,
 			WhenDown:      s.whenDown,
 			StrikeCounter: int32(s.strikeCounter),
@@ -315,7 +350,7 @@ func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 		if err != nil {
 			log.Println(err)
 		}
-		requisition.response_body = string(body)
+		requisition.response_body = body
 		requisition.when = time.Now()
 		requisition.status = res.StatusCode
 
@@ -339,11 +374,29 @@ func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 		if !s.wasDown {
 			s.wasDown = true
 			s.whenDown.Time = time.Now()
+			s.whenDown.Valid = true
 		}
 		notifyDiscord(fmt.Sprintf("❌ Your service %v went down :(", s.URL), s.DiscordWebhook)
 		notifyDiscord(fmt.Sprintf("Down when: %v", s.whenDown.Time), s.DiscordWebhook)
 	}
 	return false, requisition
+}
+
+func middlewareAuth(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return (func(w http.ResponseWriter, r *http.Request) {
+		addr, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil || addr != allowedAddr {
+			respondWithError(w, http.StatusForbidden, "Invalid remote address")
+			return
+		}
+
+		key, err := GetAPIKey(r.Header)
+		if err != nil || key != expectedKey {
+			respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		next(w, r)
+	})
 }
 
 func notifyDiscord(message string, discordWebhook string) {
@@ -385,114 +438,16 @@ func notifyDiscord(message string, discordWebhook string) {
 	}
 }
 
-func decodeInput(w http.ResponseWriter, r *http.Request, out any) bool {
-	decoder := json.NewDecoder(r.Body)
-	defer r.Body.Close()
-
-	err := decoder.Decode(out)
+func listRequisitions(w http.ResponseWriter, r *http.Request) {
+	requisitions, err := cfg.db.GetRequisitions(r.Context())
 	if err != nil {
-		log.Printf("Error decoding: %s", err)
-		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-		return false
-	}
-	return true
-}
-
-func missingRequiredFields(service CreateService) bool {
-	if service.Name == "" {
-		return true
-	}
-	if service.URL == "" {
-		return true
-	}
-	if service.Timeout == 0 {
-		return true
-	}
-	if service.Heartbeat == 0 {
-		return true
-	}
-	if service.Strikes == 0 {
-		return true
-	}
-	return false
-}
-
-func respondWithError(w http.ResponseWriter, code int, message string) {
-	type errorVal struct {
-		Error string `json:"error"`
-	}
-
-	retErr := errorVal{Error: message}
-
-	errDat, err := json.Marshal(retErr)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
-		w.WriteHeader(500)
+		log.Printf("Failed to get requisitions from database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to get requisitions from database")
 		return
 	}
 
-	w.WriteHeader(code)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(errDat)
+	respondWithJSON(w, http.StatusOK, requisitions)
 }
-
-func respondWithJSON(w http.ResponseWriter, code int, rawData any) {
-	data, err := json.Marshal(rawData)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
-		w.WriteHeader(500)
-		w.Write(data)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	w.Write(data)
-}
-
-// Expected Header: Authorization: ApiKey KEY_VALUE
-func GetAPIKey(headers http.Header) (string, error) {
-	authHeader := headers.Get("Authorization")
-	if authHeader == "" {
-		return "", errors.New("authorization header is missing")
-	}
-
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || parts[0] != "ApiKey" {
-		return "", errors.New("invalid authorization format")
-	}
-
-	return parts[1], nil
-}
-
-// Old code
-
-//discorddowndata = {
-//username: "amiup",
-//embeds: [{
-//title: "❌ Your service " + monitorJSON["name"] + " went down. ❌",
-//color: 16711680,
-//timestamp: heartbeatJSON["time"],
-//fields: [
-//{
-//name: "Service Name",
-//value: monitorJSON["name"],
-//},
-//...(!notification.disableUrl ? [{
-//name: monitorJSON["type"] === "push" ? "Service Type" : "Service URL",
-////value: this.extractAddress(monitorJSON),
-//}] : []),
-//{
-//name: `Time (${heartbeatJSON["timezone"]})`,
-////value: heartbeatJSON["localDateTime"],
-//},
-//{
-//name: "Error",
-//value: heartbeatJSON["msg"] == null ? "N/A" : heartbeatJSON["msg"],
-//},
-//],
-//}],
-//////};
 
 // Example Usage
 /*

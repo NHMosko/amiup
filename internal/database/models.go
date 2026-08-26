@@ -11,6 +11,15 @@ import (
 	"github.com/google/uuid"
 )
 
+type Requisition struct {
+	ID           uuid.UUID
+	ServiceID    uuid.UUID
+	RequestTime  time.Time
+	Status       int32
+	ResponseBody []byte
+	Duration     int32
+}
+
 type Service struct {
 	ID             uuid.UUID
 	CreatedAt      time.Time

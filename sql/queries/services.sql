@@ -31,16 +31,33 @@ VALUES (
 )
 RETURNING *;
 
+-- name: EditService :exec
+UPDATE services
+SET name = $2,
+	url = $3,
+	discord_webhook = $4,
+	timeout = $5,
+	heartbeat = $6,
+	strikes = $7
+WHERE id = $1;
+
 -- name: UpdateService :exec
 UPDATE services
-SET strikes = $2,
+SET down_counter = $2,
 	was_down = $3,
 	when_down = $4,
 	strike_counter = $5,
-	total_counter = $6,
-	down_counter = $7
+	total_counter = $6
 WHERE id = $1;
 
 -- name: GetServices :many
 SELECT * FROM services
 ORDER BY created_at DESC;
+
+-- name: GetService :one
+SELECT * FROM services
+WHERE id = $1;
+
+-- name: DeleteService :exec
+DELETE FROM services
+WHERE id = $1;

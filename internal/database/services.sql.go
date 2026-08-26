@@ -93,6 +93,76 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 	return i, err
 }
 
+const deleteService = `-- name: DeleteService :exec
+DELETE FROM services
+WHERE id = $1
+`
+
+func (q *Queries) DeleteService(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, deleteService, id)
+	return err
+}
+
+const editService = `-- name: EditService :exec
+UPDATE services
+SET name = $2,
+	url = $3,
+	discord_webhook = $4,
+	timeout = $5,
+	heartbeat = $6,
+	strikes = $7
+WHERE id = $1
+`
+
+type EditServiceParams struct {
+	ID             uuid.UUID
+	Name           string
+	Url            string
+	DiscordWebhook string
+	Timeout        int32
+	Heartbeat      int32
+	Strikes        int32
+}
+
+func (q *Queries) EditService(ctx context.Context, arg EditServiceParams) error {
+	_, err := q.db.ExecContext(ctx, editService,
+		arg.ID,
+		arg.Name,
+		arg.Url,
+		arg.DiscordWebhook,
+		arg.Timeout,
+		arg.Heartbeat,
+		arg.Strikes,
+	)
+	return err
+}
+
+const getService = `-- name: GetService :one
+SELECT id, created_at, name, url, discord_webhook, timeout, heartbeat, strikes, was_down, when_down, strike_counter, total_counter, down_counter FROM services
+WHERE id = $1
+`
+
+func (q *Queries) GetService(ctx context.Context, id uuid.UUID) (Service, error) {
+	row := q.db.QueryRowContext(ctx, getService, id)
+	var i Service
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.Name,
+		&i.Url,
+		&i.DiscordWebhook,
+		&i.Timeout,
+		&i.Heartbeat,
+		&i.Strikes,
+		&i.WasDown,
+		&i.WhenDown,
+		&i.StrikeCounter,
+		&i.TotalCounter,
+		&i.DownCounter,
+	)
+	return i, err
+}
+
 const getServices = `-- name: GetServices :many
 SELECT id, created_at, name, url, discord_webhook, timeout, heartbeat, strikes, was_down, when_down, strike_counter, total_counter, down_counter FROM services
 ORDER BY created_at DESC
@@ -137,34 +207,31 @@ func (q *Queries) GetServices(ctx context.Context) ([]Service, error) {
 
 const updateService = `-- name: UpdateService :exec
 UPDATE services
-SET strikes = $2,
+SET down_counter = $2,
 	was_down = $3,
 	when_down = $4,
 	strike_counter = $5,
-	total_counter = $6,
-	down_counter = $7
+	total_counter = $6
 WHERE id = $1
 `
 
 type UpdateServiceParams struct {
 	ID            uuid.UUID
-	Strikes       int32
+	DownCounter   int32
 	WasDown       bool
 	WhenDown      sql.NullTime
 	StrikeCounter int32
 	TotalCounter  int32
-	DownCounter   int32
 }
 
 func (q *Queries) UpdateService(ctx context.Context, arg UpdateServiceParams) error {
 	_, err := q.db.ExecContext(ctx, updateService,
 		arg.ID,
-		arg.Strikes,
+		arg.DownCounter,
 		arg.WasDown,
 		arg.WhenDown,
 		arg.StrikeCounter,
 		arg.TotalCounter,
-		arg.DownCounter,
 	)
 	return err
 }
