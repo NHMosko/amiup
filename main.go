@@ -23,6 +23,7 @@ package main
 // - Entender o bug de não ter os dados dos serviços nos outros endpoints
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -39,20 +40,30 @@ import (
 	"time"
 
 	"github.com/NHMosko/amiup/internal/database"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
 
 // ADAPTING TO RECEIVE DIFFERENT STRUCT THAN IS STORED
-
-type Service struct {
+type CreateService struct {
 	Name           string `json:"name"`
 	Timeout        int    `json:"timeout"`
 	URL            string `json:"url"`
 	Heartbeat      int    `json:"heartbeat"`
 	Strikes        int    `json:"strikes"`
 	DiscordWebhook string `json:"discord_webhook"`
+}
+
+type Service struct {
+	DB_ID          uuid.UUID
+	Name           string
+	Timeout        int
+	URL            string
+	Heartbeat      int
+	Strikes        int
+	DiscordWebhook string
 	wasDown        bool
-	whenDown       time.Time
+	whenDown       sql.NullTime
 	strikeCounter  int
 	totalCounter   int
 	downCounter    int
@@ -86,18 +97,17 @@ func main() {
 	allowedAddr = os.Getenv("REMOTE_ADDR")
 	allowInsecureTargetStr := os.Getenv("ALLOW_INSECURE_TARGET")
 	dbURL := os.Getenv("DB_URL")
-	log.Println(dbURL)
+	//log.Println(dbURL)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err)
-		return;
+		return
 	}
 	dbQueries := database.New(db)
 	cfg = Config{
 		db: dbQueries,
 	}
-	log.Println(cfg.db)
-
+	//log.Println(cfg.db)
 
 	allowInsecureTarget, err = strconv.ParseBool(allowInsecureTargetStr)
 	if err != nil {
@@ -105,9 +115,14 @@ func main() {
 		return
 	}
 
-	//for _, service := range services {
-		//go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
-	//}
+	dbServices, err := cfg.db.GetServices(context.Background())
+	if err != nil {
+		log.Printf("Failed to get services from database: %v\n", err)
+		return
+	}
+	for _, service := range dbServices {
+		go check(&service) // eu sinto que checar a coisa em paralelo está me impedindo de acessar os valores certos
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /services", addNewService)
@@ -138,7 +153,7 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	serv := Service{}
+	serv := CreateService{}
 	if !decodeInput(w, r, &serv) {
 		return
 	}
@@ -151,20 +166,16 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 
 	//go check(&serv) NOTE(nico): disable temporarily
 	addedService, err := cfg.db.CreateService(r.Context(), database.CreateServiceParams{
-		Name: serv.Name,
-		Url          : serv.URL,	
-		Timeout      : int32(serv.Timeout),	
-		Heartbeat    : int32(serv.Heartbeat),	
-		Strikes      : int32(serv.Strikes),	
-		WasDown      : serv.wasDown,	
-		WhenDown     : sql.NullTime{Time: time.Now(), Valid: false},	
-		StrikeCounter: sql.NullInt32{Int32: 0, Valid: true},	
-		TotalCounter : sql.NullInt32{Int32: 0, Valid: true},	
-		DownCounter  : sql.NullInt32{Int32: 0, Valid: true},	
+		Name:           serv.Name,
+		Url:            serv.URL,
+		Timeout:        int32(serv.Timeout),
+		Heartbeat:      int32(serv.Heartbeat),
+		Strikes:        int32(serv.Strikes),
+		DiscordWebhook: serv.DiscordWebhook,
 	})
 	if err != nil {
 		log.Printf("Failed to add service to database: %v\n", err)
-		respondWithError(w, http.StatusBadRequest, "Failed to add service to database")
+		respondWithError(w, http.StatusInternalServerError, "Failed to add service to database")
 		return
 	}
 
@@ -174,10 +185,14 @@ func addNewService(w http.ResponseWriter, r *http.Request) {
 
 func listServices(w http.ResponseWriter, r *http.Request) {
 	// listar serviços e porcentagens
-	for _, service := range services {
-		log.Println(service)
+	services, err := cfg.db.GetServices(r.Context())
+	if err != nil {
+		log.Printf("Failed to get services from database: %v\n", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to get services from database")
+		return
 	}
-	respondWithJSON(w, http.StatusOK, "Services.")
+
+	respondWithJSON(w, http.StatusOK, services)
 }
 
 func removeService(w http.ResponseWriter, r *http.Request) {
@@ -221,13 +236,31 @@ func removeService(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusAccepted, "Services removed")
 }
 
-func check(service *Service) {
+func decode_service(service *database.Service) Service {
+	return Service{
+		DB_ID:          service.ID,
+		Name:           service.Name,
+		Timeout:        int(service.Timeout),
+		URL:            service.Url,
+		Heartbeat:      int(service.Heartbeat),
+		Strikes:        int(service.Strikes),
+		DiscordWebhook: service.DiscordWebhook,
+		wasDown:        service.WasDown,
+		whenDown:       service.WhenDown,
+		strikeCounter:  int(service.StrikeCounter),
+		totalCounter:   int(service.TotalCounter),
+		downCounter:    int(service.DownCounter),
+	}
+}
+
+func check(service *database.Service) {
 	if service == nil {
 		return
 	}
+	serv := decode_service(service)
 
 	if !allowInsecureTarget {
-		url, err := url.Parse(service.URL)
+		url, err := url.Parse(serv.URL)
 		if err != nil {
 			log.Println(err)
 			return
@@ -237,25 +270,20 @@ func check(service *Service) {
 		}
 	}
 
-	ticker := time.NewTicker(time.Duration(service.Heartbeat) * time.Second)
+	ticker := time.NewTicker(time.Duration(serv.Heartbeat) * time.Second)
 	client := http.Client{
-		Timeout: time.Duration(service.Timeout) * time.Second, //timeout <= heartbeat/2
+		Timeout: time.Duration(serv.Timeout) * time.Second, //timeout <= heartbeat/2
 	}
 	for {
 		//mudar ticker pra delay pós requisição
 		<-ticker.C
 
 		time_check := time.Now()
-		ok, req := service.checkAvailability(client)
+		ok, req := serv.checkAvailability(client)
 		if !ok {
 			//exponential backoff (~random) for strikes
 		}
 		req.duration = time.Since(time_check)
-
-		//fmt.Println(req.when)
-		//fmt.Println(len(req.response_body))
-		//fmt.Println(req.status)
-		//fmt.Println(req.duration)
 	}
 }
 
@@ -264,6 +292,15 @@ func check(service *Service) {
 func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 	defer func() {
 		s.totalCounter++
+		cfg.db.UpdateService(context.Background(), database.UpdateServiceParams{
+			ID:            s.DB_ID,
+			Strikes:       int32(s.Strikes),
+			WasDown:       s.wasDown,
+			WhenDown:      s.whenDown,
+			StrikeCounter: int32(s.strikeCounter),
+			TotalCounter:  int32(s.totalCounter),
+			DownCounter:   int32(s.downCounter),
+		})
 		fmt.Printf("Uptime percentage: %.2f%% (%v/%v)\n\n", 100-((float64(s.downCounter)*100)/float64(s.totalCounter)), s.totalCounter-s.downCounter, s.totalCounter)
 	}()
 
@@ -287,8 +324,8 @@ func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 			s.strikeCounter = 0
 			if s.wasDown {
 				s.wasDown = false
-				notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown)), s.DiscordWebhook)
-				s.whenDown = time.Time{}
+				notifyDiscord(fmt.Sprintf("✅ Your service %v is back up! :) - Downtime: %v", s.URL, time.Since(s.whenDown.Time)), s.DiscordWebhook)
+				s.whenDown.Valid = false
 			}
 			return true, requisition
 		}
@@ -299,11 +336,12 @@ func (s *Service) checkAvailability(client http.Client) (bool, Requisition) {
 	log.Printf("%s seems down - Strike %v/%v\n", s.Name, s.strikeCounter, s.Strikes)
 	if s.strikeCounter == s.Strikes {
 		s.strikeCounter = 0
-		notifyDiscord(fmt.Sprintf("❌ Your service %v went down :(", s.URL), s.DiscordWebhook)
 		if !s.wasDown {
 			s.wasDown = true
-			s.whenDown = time.Now()
+			s.whenDown.Time = time.Now()
 		}
+		notifyDiscord(fmt.Sprintf("❌ Your service %v went down :(", s.URL), s.DiscordWebhook)
+		notifyDiscord(fmt.Sprintf("Down when: %v", s.whenDown.Time), s.DiscordWebhook)
 	}
 	return false, requisition
 }
@@ -360,7 +398,7 @@ func decodeInput(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 
-func missingRequiredFields(service Service) bool {
+func missingRequiredFields(service CreateService) bool {
 	if service.Name == "" {
 		return true
 	}

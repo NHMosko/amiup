@@ -8,6 +8,8 @@ package database
 import (
 	"context"
 	"database/sql"
+
+	"github.com/google/uuid"
 )
 
 const createService = `-- name: CreateService :one
@@ -16,6 +18,7 @@ INSERT INTO services (
 	created_at,
 	name,
 	url,
+	discord_webhook,
 	timeout,
 	heartbeat,
 	strikes,
@@ -37,28 +40,31 @@ VALUES (
 	$7,
 	$8,
 	$9,
-	$10
+	$10,
+	$11
 )
-RETURNING id, created_at, name, url, timeout, heartbeat, strikes, was_down, when_down, strike_counter, total_counter, down_counter
+RETURNING id, created_at, name, url, discord_webhook, timeout, heartbeat, strikes, was_down, when_down, strike_counter, total_counter, down_counter
 `
 
 type CreateServiceParams struct {
-	Name          string
-	Url           string
-	Timeout       int32
-	Heartbeat     int32
-	Strikes       int32
-	WasDown       sql.NullBool
-	WhenDown      sql.NullTime
-	StrikeCounter sql.NullInt32
-	TotalCounter  sql.NullInt32
-	DownCounter   sql.NullInt32
+	Name           string
+	Url            string
+	DiscordWebhook string
+	Timeout        int32
+	Heartbeat      int32
+	Strikes        int32
+	WasDown        bool
+	WhenDown       sql.NullTime
+	StrikeCounter  int32
+	TotalCounter   int32
+	DownCounter    int32
 }
 
 func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (Service, error) {
 	row := q.db.QueryRowContext(ctx, createService,
 		arg.Name,
 		arg.Url,
+		arg.DiscordWebhook,
 		arg.Timeout,
 		arg.Heartbeat,
 		arg.Strikes,
@@ -74,6 +80,7 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 		&i.CreatedAt,
 		&i.Name,
 		&i.Url,
+		&i.DiscordWebhook,
 		&i.Timeout,
 		&i.Heartbeat,
 		&i.Strikes,
@@ -84,4 +91,80 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 		&i.DownCounter,
 	)
 	return i, err
+}
+
+const getServices = `-- name: GetServices :many
+SELECT id, created_at, name, url, discord_webhook, timeout, heartbeat, strikes, was_down, when_down, strike_counter, total_counter, down_counter FROM services
+ORDER BY created_at DESC
+`
+
+func (q *Queries) GetServices(ctx context.Context) ([]Service, error) {
+	rows, err := q.db.QueryContext(ctx, getServices)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Service
+	for rows.Next() {
+		var i Service
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.Name,
+			&i.Url,
+			&i.DiscordWebhook,
+			&i.Timeout,
+			&i.Heartbeat,
+			&i.Strikes,
+			&i.WasDown,
+			&i.WhenDown,
+			&i.StrikeCounter,
+			&i.TotalCounter,
+			&i.DownCounter,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateService = `-- name: UpdateService :exec
+UPDATE services
+SET strikes = $2,
+	was_down = $3,
+	when_down = $4,
+	strike_counter = $5,
+	total_counter = $6,
+	down_counter = $7
+WHERE id = $1
+`
+
+type UpdateServiceParams struct {
+	ID            uuid.UUID
+	Strikes       int32
+	WasDown       bool
+	WhenDown      sql.NullTime
+	StrikeCounter int32
+	TotalCounter  int32
+	DownCounter   int32
+}
+
+func (q *Queries) UpdateService(ctx context.Context, arg UpdateServiceParams) error {
+	_, err := q.db.ExecContext(ctx, updateService,
+		arg.ID,
+		arg.Strikes,
+		arg.WasDown,
+		arg.WhenDown,
+		arg.StrikeCounter,
+		arg.TotalCounter,
+		arg.DownCounter,
+	)
+	return err
 }

@@ -12,16 +12,17 @@ import (
 )
 
 type Service struct {
-	ID            uuid.UUID
-	CreatedAt     time.Time
-	Name          string
-	Url           string
-	Timeout       int32
-	Heartbeat     int32
-	Strikes       int32
-	WasDown       sql.NullBool
-	WhenDown      sql.NullTime
-	StrikeCounter sql.NullInt32
-	TotalCounter  sql.NullInt32
-	DownCounter   sql.NullInt32
+	ID             uuid.UUID
+	CreatedAt      time.Time
+	Name           string
+	Url            string
+	DiscordWebhook string
+	Timeout        int32
+	Heartbeat      int32
+	Strikes        int32
+	WasDown        bool
+	WhenDown       sql.NullTime
+	StrikeCounter  int32
+	TotalCounter   int32
+	DownCounter    int32
 }

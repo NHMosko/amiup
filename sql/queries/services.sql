@@ -30,3 +30,17 @@ VALUES (
 	$11
 )
 RETURNING *;
+
+-- name: UpdateService :exec
+UPDATE services
+SET strikes = $2,
+	was_down = $3,
+	when_down = $4,
+	strike_counter = $5,
+	total_counter = $6,
+	down_counter = $7
+WHERE id = $1;
+
+-- name: GetServices :many
+SELECT * FROM services
+ORDER BY created_at DESC;
