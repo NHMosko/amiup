@@ -26,3 +26,6 @@ the endpoints are:
 
 all of the returned jsons in this version look bad, they're not formatted
 that's something to look forward to in my next update ;)
+
+Example usage:
+curl -H "Authorization: ApiKey 1234" localhost:8082/services --data '{"name": "Google", "timeout": 10, "url": "https://google.com", "heartbeat": 5, "strikes": 3, "discord_webhook": ""}'
