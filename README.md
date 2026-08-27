@@ -6,6 +6,7 @@ solving the problem of keeping track of your applications' state, with no fancy 
 what the server terminal looks like
 
 ## How to use it
+### clone the project and run it in a dedicated server
 amiup works with a postgres database set in a .env,
 you create services for it to keep track of with http post requests,
 you keep the server running and everything is done through http,
@@ -40,3 +41,4 @@ at the moment we only support postgres databases, but my next update will includ
 other plans for the updates are:
  - making the http endpoints more restful
  - creating a front-end and quality of life features for a more user-friendly experience
+ - making it downloadable with 'go install'
