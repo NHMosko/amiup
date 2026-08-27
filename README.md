@@ -1,6 +1,6 @@
 # amiup
-### Simple uptimer
-amiup strives to be reliable and small, solving the problem of keeping track of your applications' state, with no fancy features
+### a reliable and simple uptimer
+solving the problem of keeping track of your applications' state, with no fancy features
 
 ## How to use it
 amiup works with a postgres database set in a .env,
