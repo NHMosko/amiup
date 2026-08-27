@@ -2,7 +2,7 @@
 ### Simple uptimer
 amiup strives to be reliable and small, solving the problem of keeping track of your applications' state, with no fancy features
 
-### How to use it
+## How to use it
 amiup works with a postgres database set in a .env,
 you create services for it to keep track of with http post requests,
 you keep the server running and everything is done through http,
