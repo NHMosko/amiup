@@ -6,7 +6,7 @@ solving the problem of keeping track of your applications' state, with no fancy 
 what the server terminal looks like
 
 ## How to use it
-### clone the project and run it in a dedicated server
+### [download amiup](https://github.com/NHMosko/amiup/releases/tag/1.0) and run it in a dedicated server
 amiup works with a postgres database set in a .env,
 you create services for it to keep track of with http post requests,
 you keep the server running and everything is done through http,
