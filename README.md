@@ -31,3 +31,6 @@ all of the returned jsons in this version are not formatted.
 
 Example POST to /services:
 ```curl -H "Authorization: ApiKey 1234" localhost:8082/services --data '{"name": "Google", "timeout": 10, "url": "https://google.com", "heartbeat": 5, "strikes": 3, "discord_webhook": ""}'```
+
+### Future
+at the moment we only support postgres databases, but my next update will include sqlite support
