@@ -1,8 +1,11 @@
 # amiup
-### Uptimer in Go
-amiup works with a postgres database set in a .env
-you create services for it to keep track of with http post requests
-you keep the server running and everything is done through http
+### Simple uptimer
+amiup strives to be reliable and small, solving the problem of keeping track of your applications' state, with no fancy features
+
+### How to use it
+amiup works with a postgres database set in a .env,
+you create services for it to keep track of with http post requests,
+you keep the server running and everything is done through http,
 you may also set these optional env variables (recommended): 
  - an api key 
  - an allowed origin for the requests
@@ -24,8 +27,7 @@ the endpoints are:
 - /services/delete/{serviceID}
 - /requisitions
 
-all of the returned jsons in this version look bad, they're not formatted
-that's something to look forward to in my next update ;)
+all of the returned jsons in this version are not formatted.
 
-Example usage:
+Example POST to /services:
 ```curl -H "Authorization: ApiKey 1234" localhost:8082/services --data '{"name": "Google", "timeout": 10, "url": "https://google.com", "heartbeat": 5, "strikes": 3, "discord_webhook": ""}'```
