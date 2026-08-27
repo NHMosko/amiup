@@ -2,6 +2,9 @@
 ### a reliable and simple uptimer
 solving the problem of keeping track of your applications' state, with no fancy features
 
+<img width="1000" height="309" alt="amiup usage in terminal" src="https://github.com/user-attachments/assets/8c5820cd-f8d5-45e0-bb8b-a045e5665ffb" />
+what the server terminal looks like
+
 ## How to use it
 amiup works with a postgres database set in a .env,
 you create services for it to keep track of with http post requests,
