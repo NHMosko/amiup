@@ -33,4 +33,7 @@ Example POST to /services:
 ```curl -H "Authorization: ApiKey 1234" localhost:8082/services --data '{"name": "Google", "timeout": 10, "url": "https://google.com", "heartbeat": 5, "strikes": 3, "discord_webhook": ""}'```
 
 ### Future
-at the moment we only support postgres databases, but my next update will include sqlite support
+at the moment we only support postgres databases, but my next update will include sqlite support,
+other plans for the updates are:
+ - making the http endpoints more restful
+ - creating a front-end and quality of life features for a more user-friendly experience
